@@ -203,3 +203,43 @@ def get_previous_tasks():
 
     previous_tasks = list(previous_tasks_cursor)
     return jsonify({"tasks": previous_tasks}), 200
+
+@task_bp.route('/history', methods=['POST'])
+def get_task_history():
+    """
+    POST /image/api/history
+    Request JSON Body:
+      {
+        "userId": "user123"
+      }
+    Returns:
+      {
+         "userId": "user123",
+         "task_history": [
+             {
+                "taskId": "xxxxxxxxxxxxxxxxxxxxxxxx",
+                "userId": "user123",
+                "matched_link": "https://example.com/valid-link",
+                "group_name": "Group Name",
+                "participant_count": 2,
+                "details": { ... },
+                "verified": true,
+                "verifiedAt": "2025-04-02T15:00:00"
+             },
+             ...
+         ]
+      }
+    """
+    data = request.get_json() or {}
+    user_id = data.get("userId", "").strip()
+    if not user_id:
+        return jsonify({"error": "userId is required"}), 400
+
+    # Query the task_history collection for documents matching the given userId.
+    tasks_cursor = db.task_history.find({"userId": user_id}, {"_id": 0}).sort("verifiedAt", -1)
+    tasks_list = list(tasks_cursor)
+
+    return jsonify({
+        "userId": user_id,
+        "task_history": tasks_list
+    }), 200

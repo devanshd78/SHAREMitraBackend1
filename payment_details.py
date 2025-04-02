@@ -167,3 +167,33 @@ def get_payment_details_by_user(user_id):
         "msg": "Payment details retrieved successfully",
         "payments": payments
     }), 200
+    
+@payment_details_bp.route("/delete", methods=["POST"])
+def delete_payment_detail():
+    """
+    POST /delete-payment
+    Deletes a particular payment detail record.
+    
+    Expected Request Body (JSON):
+    {
+      "userId": "67e7a14d65d938a816d1c4f9",
+      "paymentId": "payment id string"
+    }
+    """
+    data = request.get_json() or {}
+    user_id = data.get("userId")
+    payment_id = data.get("paymentId")
+
+    if not user_id or not payment_id:
+        return jsonify({"status": 0, "msg": "User ID and Payment ID are required"}), 400
+
+    # Verify if the payment record exists and belongs to the given user
+    payment = db.payment.find_one({"paymentId": payment_id, "userId": user_id})
+    if not payment:
+        return jsonify({"status": 404, "msg": "Payment detail not found for this user"}), 404
+
+    result = db.payment.delete_one({"_id": payment["_id"]})
+    if result.deleted_count:
+        return jsonify({"status": 200, "msg": "Payment detail deleted successfully"}), 200
+    else:
+        return jsonify({"status": 500, "msg": "Failed to delete payment detail"}), 500

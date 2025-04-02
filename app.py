@@ -7,8 +7,7 @@ from payment_details import payment_details_bp
 from user import user_bp
 from admin import admin_bp
 from dashboard import dashboard_bp
-
-
+from payout import payout_bp
 
 app = Flask(__name__)
 
@@ -21,7 +20,7 @@ app.register_blueprint(payment_details_bp, url_prefix="/payment")
 app.register_blueprint(user_bp)
 app.register_blueprint(admin_bp,url_prefix = "/admin")
 app.register_blueprint(dashboard_bp,url_prefix = "/dashboard")
-
+app.register_blueprint(payout_bp,url_prefix = "/payout")
 
 if __name__ == '__main__':
     app.run(debug=True)
