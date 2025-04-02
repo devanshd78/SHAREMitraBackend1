@@ -3,14 +3,11 @@ import bcrypt
 from flask import Flask, request, jsonify, Blueprint
 from pymongo import MongoClient
 from bson import ObjectId
+from db import db
 
 admin_bp = Blueprint("admin", __name__)
 
-client = MongoClient("mongodb://localhost:27017")
-db = client["enoylity"]
-admins_collection = db["admins"]
-
-@admin_bp.route("/register-admin", methods=["POST"])
+@admin_bp.route("/register", methods=["POST"])
 def register_admin():
     data = request.get_json()
     admin_name = data.get('fullName')
@@ -39,7 +36,7 @@ def register_admin():
             'class': "error"
         }), 400
 
-    existing_admin = admins_collection.find_one({'email': admin_email})
+    existing_admin = db.find_one({'email': admin_email})
     if existing_admin:
         return jsonify({
             'status': 0,
@@ -57,20 +54,20 @@ def register_admin():
         "password": hashed_password
     }
 
-    admins_collection.insert_one(admin_data)
+    db.insert_one(admin_data)
 
     return jsonify({
         'status': 200,
         'msg': "Admin registered successfully",
     }), 200
 
-@admin_bp.route("/login-admin", methods=["POST"])
+@admin_bp.route("/login", methods=["POST"])
 def login_admin():
     input_data = request.get_json()
     email = input_data.get('email')
     password = input_data.get('password')
 
-    admin = admins_collection.find_one({'email': email})
+    admin = db.find_one({'email': email})
 
     if admin and bcrypt.checkpw(password.encode('utf-8'), admin['password'].encode('utf-8')):
         admin['_id'] = str(admin['_id'])
