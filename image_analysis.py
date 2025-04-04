@@ -8,7 +8,7 @@ from flask import Flask, request, jsonify, Blueprint
 from werkzeug.utils import secure_filename
 from pymongo import MongoClient
 from dotenv import load_dotenv
-
+from wallet import update_wallet_after_task
 # Load environment variables
 load_dotenv()
 
@@ -16,7 +16,9 @@ load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_API_URL = os.getenv("OPENAI_API_URL")
 
+# Blueprints for image analysis and task management
 image_analysis_bp = Blueprint('image_analysis', __name__, url_prefix="/image")
+task_bp = Blueprint('task', __name__, url_prefix="/task")
 
 UPLOAD_FOLDER = 'uploads'
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg'}
@@ -200,12 +202,21 @@ def verify_image():
     if not user_id:
         return jsonify({"error": "userId is required"}), 400
 
+    # Check if the user has already completed this task
+    existing_entry = db.task_history.find_one({"taskId": task_id, "userId": user_id})
+    if existing_entry:
+        return jsonify({
+            "error": "Already done task",
+            "message": "This user has already completed the task.",
+            "status": "already_done"
+        }), 200
+
     # Fetch the task document from the database
     task_doc = db.tasks.find_one({"taskId": task_id})
     if not task_doc:
         return jsonify({"error": "Task not found"}), 404
 
-    # Update the task status to pending as soon as it is selected
+    # Mark the task as pending when it is visited
     db.tasks.update_one(
         {"taskId": task_id},
         {"$set": {"status": "pending", "updatedAt": datetime.utcnow()}}
@@ -236,10 +247,15 @@ def verify_image():
     # Check if the broadcast list is valid (minimum recipient count)
     group_check = check_group_participants(group_image_path)
     if not group_check.get("is_valid_group"):
+        db.tasks.update_one(
+            {"taskId": task_id},
+            {"$set": {"status": "rejected", "updatedAt": datetime.utcnow()}}
+        )
         return jsonify({
             "verified": False,
             "message": "Broadcast list must contain at least 2 recipients.",
-            "participant_check": group_check
+            "participant_check": group_check,
+            "status": "rejected"
         }), 200
 
     # Use the task's message (link) as the expected link for verification
@@ -250,33 +266,52 @@ def verify_image():
         # Update task status to accepted if verification succeeds
         db.tasks.update_one(
             {"taskId": task_id},
-            {"$set": {"status": "accepted", "updatedAt": datetime.utcnow()}}
+            {"$set": {
+                "status": "accepted",
+                "updatedAt": datetime.utcnow(),
+                "verification_details": result.get("details", {})
+            }}
         )
 
-        # Save the verified task to task_history along with the userId
+        # Save the verified task to task_history along with the userId and task_price
         history_doc = {
             "taskId": task_id,
             "userId": user_id,
             "matched_link": expected_link,
             "group_name": group_check.get("group_name"),
             "participant_count": group_check.get("participant_count"),
-            "details": result.get("details", {}),
+            "verification_details": result.get("details", {}),
             "verified": True,
-            "verifiedAt": datetime.utcnow()
+            "verifiedAt": datetime.utcnow(),
+            "task_price": int(task_doc.get("task_price", 0))
         }
         db.task_history.insert_one(history_doc)
+        wallet_update = update_wallet_after_task(user_id, task_id, int(task_doc.get("task_price", 0)))
+        if "error" in wallet_update:
+            return jsonify(wallet_update), 400
 
         return jsonify({
             "verified": True,
             "matched_link": expected_link,
             "group_name": group_check.get("group_name"),
             "participant_count": group_check.get("participant_count"),
-            "details": result.get("details", {})
+            "verification_details": result.get("details", {}),
+            "status": "accepted"
         }), 200
-
-    # If verification fails, you can choose to leave the task status as pending or update it further.
-    return jsonify({
-        "verified": False,
-        "message": "No matching link found in the broadcast message screenshot",
-        "participant_check": group_check
-    }), 200
+    else:
+        # Update task status to rejected if verification fails
+        db.tasks.update_one(
+            {"taskId": task_id},
+            {"$set": {
+                "status": "rejected",
+                "updatedAt": datetime.utcnow(),
+                "verification_details": result.get("details", {})
+            }}
+        )
+        return jsonify({
+            "verified": False,
+            "message": "No matching link found in the broadcast message screenshot",
+            "participant_check": group_check,
+            "verification_details": result.get("details", {}),
+            "status": "rejected"
+        }), 200

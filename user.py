@@ -154,17 +154,39 @@ def login():
         "user": user_doc
     }), 200
 
-@user_bp.route("/getlist", methods=["GET"])
+@user_bp.route("/getlist", methods=["POST"])
 def get_user_list():
-    """
-    Returns a list of all users (excluding passwordHash).
-    """
-    users_cursor = db.users.find({}, {
-        "_id": 0, 
-        "passwordHash": 0
-    })
+    data = request.get_json() or {}
+    keyword = data.get("keyword", "")
+    try:
+        page = int(data.get("page", 0))
+    except ValueError:
+        return jsonify({"error": "Page must be an integer."}), 400
+    try:
+        per_page = int(data.get("per_page", 50))
+    except ValueError:
+        return jsonify({"error": "per_page must be an integer."}), 400
+
+    query = {}
+    if keyword:
+        query = {
+            "$or": [
+                {"name": {"$regex": keyword, "$options": "i"}},
+                {"email": {"$regex": keyword, "$options": "i"}},
+                {"phone": {"$regex": keyword, "$options": "i"}}
+            ]
+        }
+
+    total_items = db.users.count_documents(query)
+    users_cursor = db.users.find(query, {"_id": 0, "passwordHash": 0}).skip(page * per_page).limit(per_page)
     users_list = list(users_cursor)
-    return jsonify(users_list), 200
+
+    return jsonify({
+        "total": total_items,
+        "page": page,
+        "per_page": per_page,
+        "users": users_list
+    }), 200
 
 @user_bp.route("/getbyid", methods=["GET"])
 def get_user_by_id():

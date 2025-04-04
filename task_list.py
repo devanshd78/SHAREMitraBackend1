@@ -19,44 +19,62 @@ def is_valid_url(url: str) -> bool:
 @task_bp.route("/create", methods=["POST"])
 def create_task():
     """
-    POST /task/createtask
+    POST /task/create
     JSON Body:
     {
       "title": "Some Title",
       "description": "Task description",
-      "message": "https://example.com/valid-link"
+      "message": "https://example.com/valid-link",
+      "task_price": 100  # New numeric input
     }
     
     - 'title' (required, non-empty)
-    - 'message' must be a valid URL (per is_valid_url).
+    - 'message' must be a valid URL
     - 'description' optional
+    - 'task_price' required, positive number
     """
     data = request.json or {}
     title = data.get("title", "").strip()
     description = data.get("description", "").strip()
-    message = data.get("message", "").strip() 
+    message = data.get("message", "").strip()
+    task_price = data.get("task_price")
+    hidden = data.get("hidden")
 
-    # Basic validation
+    # Validation
     if not title:
         return jsonify({"error": "title is required"}), 400
+
     if not message:
         return jsonify({"error": "message (link) is required"}), 400
+
     if not is_valid_url(message):
         return jsonify({"error": "message must be a valid link (URL)"}), 400
 
-    # Generate a unique taskId from MongoDB ObjectId
+    if task_price is None:
+        return jsonify({"error": "task_price is required"}), 400
+    try:
+        task_price = float(task_price)
+        if task_price <= 0:
+            raise ValueError()
+    except ValueError:
+        return jsonify({"error": "task_price must be a positive number"}), 400
+
+    # Generate unique taskId
     task_id_str = str(ObjectId())
 
     task_doc = {
         "taskId": task_id_str,
         "title": title,
         "description": description,
-        "message": message,  # validated URL
+        "message": message,
+        "task_price": task_price,  # New field added
+        "hidden": hidden,           # Default value added
         "createdAt": datetime.datetime.utcnow(),
         "updatedAt": datetime.datetime.utcnow()
     }
 
     db.tasks.insert_one(task_doc)
+
     return jsonify({
         "message": "Task created successfully",
         "taskId": task_id_str
@@ -65,17 +83,19 @@ def create_task():
 @task_bp.route("/update", methods=["POST"])
 def update_task():
     """
-    POST /task/updatetask
+    POST /task/update
     JSON Body:
     {
       "taskId": "xxxxxxxxxxxxxxxxxxxxxxxx",
       "title": "New Title",
       "description": "New Description",
-      "message": "https://example.com/new-valid-link"
+      "message": "https://example.com/new-valid-link",
+      "task_price": 120.50  # Optional numeric input
     }
     
     - 'taskId' is required to find the existing task.
     - If 'message' is provided, it must be a valid URL.
+    - If 'task_price' is provided, it must be a positive number.
     """
     data = request.json or {}
     task_id = data.get("taskId", "").strip()
@@ -83,6 +103,7 @@ def update_task():
         return jsonify({"error": "taskId is required"}), 400
 
     update_fields = {}
+
     # Title
     if "title" in data:
         title = data["title"].strip()
@@ -90,7 +111,7 @@ def update_task():
             update_fields["title"] = title
         else:
             return jsonify({"error": "title cannot be empty"}), 400
-    
+
     # Description
     if "description" in data:
         update_fields["description"] = data["description"].strip()
@@ -104,6 +125,17 @@ def update_task():
             return jsonify({"error": "message must be a valid link (URL)"}), 400
         update_fields["message"] = new_message
 
+    # Task Price
+    if "task_price" in data:
+        task_price = data["task_price"]
+        try:
+            task_price = float(task_price)
+            if task_price <= 0:
+                raise ValueError()
+            update_fields["task_price"] = task_price
+        except ValueError:
+            return jsonify({"error": "task_price must be a positive number"}), 400
+
     if not update_fields:
         return jsonify({"error": "No valid fields to update"}), 400
 
@@ -113,6 +145,7 @@ def update_task():
         {"taskId": task_id},
         {"$set": update_fields}
     )
+
     if result.matched_count == 0:
         return jsonify({"error": "Task not found"}), 404
 
@@ -140,16 +173,74 @@ def delete_task():
 
     return jsonify({"message": "Task deleted successfully"}), 200
 
-@task_bp.route("/getall", methods=["GET"])
+@task_bp.route("/getall", methods=["POST"])
 def get_all_tasks():
     """
-    GET /task/getall
-    Returns all tasks sorted by newest first (newest task on top).
-    Excludes Mongo _id field and wraps in 'task' key.
+    POST /task/getall
+    Request JSON Body:
+      {
+        "keyword": "optional search keyword",
+        "page": 0,             # optional, default=0
+        "per_page": 50         # optional, default=50
+      }
+    Returns:
+      {
+        "total": <total_matching_tasks>,
+        "page": <current_page>,
+        "per_page": <items_per_page>,
+        "tasks": [
+            {
+              "taskId": "xxxxxxxxxxxxxxxxxxxxxxxx",
+              "title": "Some Title",
+              "description": "Task description",
+              "message": "https://example.com/valid-link",
+              "status": "pending/accepted",  # defaults to pending if not updated
+              "createdAt": "...",
+              "updatedAt": "..."
+            },
+            ...
+        ]
+      }
     """
-    tasks_cursor = db.tasks.find({}, {"_id": 0}).sort("createdAt", -1)
+    data = request.get_json() or {}
+    
+    # Retrieve optional keyword and pagination parameters
+    keyword = data.get("keyword", "").strip()
+    try:
+        page = int(data.get("page", 0))
+    except ValueError:
+        return jsonify({"error": "page must be an integer"}), 400
+
+    try:
+        per_page = int(data.get("per_page", 50))
+    except ValueError:
+        return jsonify({"error": "per_page must be an integer"}), 400
+
+    # Build query. No userId filtering is applied.
+    query = {}
+    if keyword:
+        query["$or"] = [
+            {"title": {"$regex": keyword, "$options": "i"}},
+            {"description": {"$regex": keyword, "$options": "i"}},
+            {"message": {"$regex": keyword, "$options": "i"}},
+            {"status": {"$regex": keyword, "$options": "i"}}
+        ]
+
+    total_items = db.tasks.count_documents(query)
+    tasks_cursor = db.tasks.find(query, {"_id": 0}).sort("createdAt", -1)\
+        .skip(page * per_page).limit(per_page)
     tasks_list = list(tasks_cursor)
-    return jsonify({"task": tasks_list}), 200
+
+    # Ensure each task shows a status, defaulting to "pending" if not set.
+    for task in tasks_list:
+        task["status"] = task.get("status", "pending")
+
+    return jsonify({
+        "total": total_items,
+        "page": page,
+        "per_page": per_page,
+        "tasks": tasks_list
+    }), 200
 
 
 @task_bp.route("/getbyid", methods=["GET"])
@@ -243,3 +334,57 @@ def get_task_history():
         "userId": user_id,
         "task_history": tasks_list
     }), 200
+    
+@task_bp.route("/togglehide", methods=["POST"])
+def toggle_hide_task():
+    """
+    POST /task/togglehide
+    JSON Body:
+    {
+      "taskId": "xxxxxxxxxxxxxxxxxxxxxxxx",
+      "action": 0    # 0 to hide, 1 to unhide
+    }
+    
+    If action is 0, the task will be hidden and a message "Task will upload soon..." is returned.
+    If action is 1, the task will be unhidden and the full task details are returned.
+    """
+    data = request.json or {}
+    task_id = data.get("taskId", "").strip()
+    isHide = data.get("isHide")
+    
+    if not task_id:
+        return jsonify({"error": "taskId is required"}), 400
+    
+    if isHide is None:
+        return jsonify({"error": "action is required. Use 1 for hide, 0 for unhide."}), 400
+    
+    try:
+        isHide = int(isHide)
+    except ValueError:
+        return jsonify({"error": "action must be an integer: 1 for hide, 0 for unhide."}), 400
+
+    if isHide not in [0, 1]:
+        return jsonify({"error": "Invalid action. Use 1 for hide, 0 for unhide."}), 400
+
+    # Set hidden field based on action
+    hidden = True if isHide == 1 else False
+
+    result = db.tasks.update_one(
+        {"taskId": task_id},
+        {"$set": {"hidden": hidden, "updatedAt": datetime.datetime.utcnow()}}
+    )
+
+    if result.matched_count == 0:
+        return jsonify({"error": "Task not found"}), 404
+
+    if hidden:
+        return jsonify({
+            "message": "Task will upload soon...",
+            "taskId": task_id
+        }), 200
+    else:
+        task = db.tasks.find_one({"taskId": task_id}, {"_id": 0})
+        return jsonify({
+            "message": "Task unhidden successfully",
+            "task": task
+        }), 200
