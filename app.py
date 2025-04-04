@@ -11,8 +11,6 @@ from contact import contact_bp
 from download import download_bp
 from wallet import wallet_bp
 
-
-
 app = Flask(__name__)
 
 cors = CORS(app, resources={r"/*": {"origins": "*"}})

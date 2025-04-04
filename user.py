@@ -118,6 +118,31 @@ def register():
         "userId": user_id_str,
     }), 201
 
+@user_bp.route("/dummy", methods=["POST"])
+def dummy_login():
+    data = request.json or {}
+    email = data.get("email", "")
+    phone = data.get("phone", "")
+
+    if not email and not phone:
+        return jsonify({"error": "Either email or phone is required"}), 400
+
+    query = {"email": email} if email else {"phone": phone}
+
+    # Find user without passwordHash and referralCode
+    user_doc = db.users.find_one(query, {
+        "_id": 0,
+        "passwordHash": 0,
+        "referralCode": 0
+    })
+    if not user_doc:
+        return jsonify({"error": "User not found"}), 404
+
+    return jsonify({
+        "message": "Dummy login successful",
+        "user": user_doc
+    }), 200
+
 @user_bp.route("/login", methods=["POST"])
 def login():
     data = request.json or {}

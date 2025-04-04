@@ -1,14 +1,20 @@
+
 import os
 import base64
 import re
 import json
 import requests
+import hmac
+import hashlib
 from datetime import datetime, timedelta
 from flask import Flask, request, jsonify, Blueprint
 from werkzeug.utils import secure_filename
 from pymongo import MongoClient
 from dotenv import load_dotenv
 from wallet import update_wallet_after_task
+from PIL import Image
+import imagehash
+
 # Load environment variables
 load_dotenv()
 
@@ -48,7 +54,7 @@ def get_recent_task_links(days=3):
 def analyze_image_with_openai(image_path, expected_link):
     try:
         base64_image = encode_image_to_base64(image_path)
-
+        print(f"Encoded Image Length: {len(base64_image)}") 
         prompt = f"""
         Analyze this image and determine if it's a screenshot of a WhatsApp broadcast message.
 
@@ -87,12 +93,11 @@ def analyze_image_with_openai(image_path, expected_link):
         }
 
         response = requests.post(OPENAI_API_URL, headers=headers, json=payload)
-
+        print("OpenAI Raw Response:", response.text)
         if response.status_code == 200:
             result = response.json()
             assistant_content = result["choices"][0]["message"]["content"]
             assistant_content_clean = re.sub(r"```(?:json)?", "", assistant_content).replace("```", "").strip()
-
             try:
                 content = json.loads(assistant_content_clean)
             except json.JSONDecodeError:
@@ -166,7 +171,6 @@ def check_group_participants(image_path):
             result = response.json()
             assistant_content = result["choices"][0]["message"]["content"]
             assistant_content_clean = re.sub(r"```(?:json)?", "", assistant_content).replace("```", "").strip()
-
             try:
                 content = json.loads(assistant_content_clean)
                 return content
@@ -177,14 +181,12 @@ def check_group_participants(image_path):
                     "reason": "OpenAI response is not valid JSON",
                     "raw_response": assistant_content
                 }
-
         return {
             "participant_count": 0,
             "is_valid_group": False,
             "reason": f"API error: {response.status_code}",
             "raw_response": response.text
         }
-
     except Exception as e:
         return {
             "participant_count": 0,
@@ -192,11 +194,38 @@ def check_group_participants(image_path):
             "reason": str(e)
         }
 
+# ------------------------------------------------------------------------------
+# pHash Computation and Duplicate Check
+# ------------------------------------------------------------------------------
+def compute_phash(image_path):
+    try:
+        img = Image.open(image_path)
+        # Return the hash as a hex string
+        return str(imagehash.phash(img))
+    except Exception as e:
+        print(f"Error computing pHash: {str(e)}")
+        return None
+
+def is_duplicate_phash(new_phash, task_id, user_id, threshold=5):
+    # Find all verified screenshots for this task
+    history = list(db.task_history.find({"taskId": task_id, "verified": True}))
+    for record in history:
+        existing_phash = record.get("image_phash")
+        if existing_phash:
+            diff = imagehash.hex_to_hash(new_phash) - imagehash.hex_to_hash(existing_phash)
+            if diff <= threshold and record.get("userId") != user_id:
+                return True
+    return False
+
+# ------------------------------------------------------------------------------
+# Updated Verification Endpoint
+# ------------------------------------------------------------------------------
 @image_analysis_bp.route('/api/verify', methods=['POST'])
 def verify_image():
-    # Retrieve taskId and userId from form data (assuming multipart/form-data)
+    # Retrieve taskId, userId from form data (assuming multipart/form-data)
     task_id = request.form.get("taskId", "").strip()
     user_id = request.form.get("userId", "").strip()
+    
     if not task_id:
         return jsonify({"error": "taskId is required"}), 400
     if not user_id:
@@ -244,8 +273,19 @@ def verify_image():
     image_file.save(image_path)
     group_image_file.save(group_image_path)
 
+    # Compute pHash for the uploaded screenshot
+    uploaded_phash = compute_phash(image_path)
+    print(f"Uploaded pHash: {uploaded_phash}")
+    if not uploaded_phash:
+        return jsonify({"error": "Unable to compute image pHash"}), 400
+
+    # Check if the same screenshot (or a very similar one) has already been used by another user for this task
+    if is_duplicate_phash(uploaded_phash, task_id, user_id):
+        return jsonify({"error": "Screenshot already used by another user"}), 400
+
     # Check if the broadcast list is valid (minimum recipient count)
     group_check = check_group_participants(group_image_path)
+    print(f"Group Check Response: {group_check}")
     if not group_check.get("is_valid_group"):
         db.tasks.update_one(
             {"taskId": task_id},
@@ -273,7 +313,7 @@ def verify_image():
             }}
         )
 
-        # Save the verified task to task_history along with the userId and task_price
+        # Save the verified task to task_history along with the userId, task_price, and image pHash
         history_doc = {
             "taskId": task_id,
             "userId": user_id,
@@ -283,7 +323,8 @@ def verify_image():
             "verification_details": result.get("details", {}),
             "verified": True,
             "verifiedAt": datetime.utcnow(),
-            "task_price": int(task_doc.get("task_price", 0))
+            "task_price": int(task_doc.get("task_price", 0)),
+            "image_phash": uploaded_phash
         }
         db.task_history.insert_one(history_doc)
         wallet_update = update_wallet_after_task(user_id, task_id, int(task_doc.get("task_price", 0)))
