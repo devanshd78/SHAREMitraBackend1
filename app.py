@@ -10,6 +10,8 @@ from payout import payout_bp
 from contact import contact_bp
 from download import download_bp
 from wallet import wallet_bp
+from test import otp_bp
+
 
 app = Flask(__name__)
 
@@ -25,6 +27,7 @@ app.register_blueprint(admin_bp,url_prefix = "/admin")
 app.register_blueprint(dashboard_bp)
 app.register_blueprint(download_bp)
 app.register_blueprint(wallet_bp)
+app.register_blueprint(otp_bp)
 
 
 if __name__ == '__main__':

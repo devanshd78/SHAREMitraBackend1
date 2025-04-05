@@ -60,7 +60,7 @@ def analyze_image_with_openai(image_path, expected_link):
 
         Specifically check for:
         1. Is this clearly a WhatsApp interface?
-        2. Is it a broadcast list (not a group)?
+        2. Is it a broadcast list (not a group & not sending message to particular user)?
         3. Does the screenshot contain this exact link or URL: '{expected_link}'?
         4. What is the timestamp or time of the message (if visible)?
 
