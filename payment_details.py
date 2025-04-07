@@ -142,19 +142,26 @@ def payment_details():
         else:
             return jsonify({"status": 500, "msg": "Failed to save payment details"}), 500
 
-@payment_details_bp.route("/payment-details/user/<user_id>", methods=["GET"])
-def get_payment_details_by_user(user_id):
+@payment_details_bp.route("/userdetail", methods=["POST"])
+def get_payment_details_by_user():
     """
-    GET /payment-details/user/<user_id>
+    POST /payment-details/user
     Fetches all payment details for a given userId.
-    Returns 404 if no records are found.
+    Expected JSON input:
+      {
+        "userId": "67e7a14d65d938a816d1c4f9"
+      }
+    If no records are found, returns an empty list with a 200 status code.
     """
+    data = request.get_json() or {}
+    user_id = data.get("userId", "").strip()
+
+    if not user_id:
+        return jsonify({"status": 0, "msg": "User ID is required"}), 400
+
     payments = list(db.payment.find({"userId": user_id}))
 
-    if not payments:
-        return jsonify({"status": 404, "msg": "No payment details found for this user"}), 404
-
-    # Convert _id and date fields to strings
+    # Convert _id and date fields to strings for each payment record
     for payment in payments:
         payment["_id"] = str(payment["_id"])
         if "created_at" in payment and isinstance(payment["created_at"], datetime):
@@ -165,7 +172,7 @@ def get_payment_details_by_user(user_id):
     return jsonify({
         "status": 200,
         "msg": "Payment details retrieved successfully",
-        "payments": payments
+        "payments": payments  # Will be an empty list if no records exist
     }), 200
     
 @payment_details_bp.route("/delete", methods=["POST"])

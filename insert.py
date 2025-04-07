@@ -1,4 +1,5 @@
 from db import db  # Ensure this imports your configured PyMongo instance
+from bson.objectid import ObjectId
 
 # Data for Indian states and union territories with some major cities.
 india_states = [
@@ -1323,14 +1324,28 @@ india_states = [
 def seed_india_states():
     """
     Clears the existing 'india_states' collection and inserts new state documents.
-    Each document contains a state or union territory name and a list of its cities.
+    Each state document now includes a unique 'stateId' and its cities are stored as objects
+    with unique 'cityId' and 'name' fields.
     """
     states_collection = db.india_states  # Use a dedicated collection for Indian states
     # Optionally clear out the collection if needed:
     states_collection.delete_many({})
-    
-    # Insert the list of state documents into the collection.
-    result = states_collection.insert_many(india_states)
+
+    new_states = []
+    for state in india_states:
+        state_id = str(ObjectId())
+        cities_list = []
+        for city in state["cities"]:
+            city_id = str(ObjectId())
+            cities_list.append({"cityId": city_id, "name": city})
+        new_state = {
+            "stateId": state_id,
+            "name": state["name"],
+            "cities": cities_list
+        }
+        new_states.append(new_state)
+
+    result = states_collection.insert_many(new_states)
     print(f"Inserted {len(result.inserted_ids)} records into the 'india_states' collection.")
 
 if __name__ == "__main__":

@@ -383,23 +383,30 @@ def update_user_details():
     return jsonify({"message": "User details updated."}), 200
 
 
-
 @user_bp.route("/referrals", methods=["GET"])
 def get_referrals():
-    referral_code = request.args.get("referralCode")
-    if not referral_code:
-        return jsonify({"error": "referralCode query param required"}), 400
+    user_id = request.args.get("userId")
+    if not user_id:
+        return jsonify({"error": "userId query param required"}), 400
 
-    referrer = db.users.find_one({"referralCode": referral_code})
+    # Find the user by userId
+    referrer = db.users.find_one({"userId": user_id})
     if not referrer:
-        return jsonify({"error": "Invalid referral code"}), 404
+        return jsonify({"error": "User not found"}), 404
 
+    # Get the referral code for this user
+    referral_code = referrer.get("referralCode")
+    if not referral_code:
+        return jsonify({"error": "User does not have a referral code"}), 404
+
+    # Find all users that were referred by this referral code
     referred_users = list(db.users.find(
         {"referredBy": referral_code},
         {"_id": 0, "passwordHash": 0}
     ))
 
     return jsonify({
+        "referralCode": referral_code,
         "referralCount": len(referred_users),
         "referredUsers": referred_users
     }), 200
@@ -428,3 +435,73 @@ def dummy_login():
         "message": "Dummy login successful",
         "user": user_doc
     }), 200
+
+@user_bp.route("/update", methods=["POST"])
+def update_user_details1():
+    data = request.json or {}
+    user_id = data.get("userId")
+    if not user_id:
+        return jsonify({"error": "userId is required"}), 400
+
+    update_fields = {}
+
+    # Update name if provided
+    if "name" in data:
+        if not is_valid_name(data["name"]):
+            return jsonify({"error": "Invalid name (max 50 chars)."}), 400
+        update_fields["name"] = data["name"]
+
+    # Update email if provided
+    if "email" in data:
+        if not is_valid_email(data["email"]):
+            return jsonify({"error": "Invalid email format or length (5-100 chars)."}), 400
+        existing_email = db.users.find_one(
+            {"email": data["email"], "userId": {"$ne": user_id}}
+        )
+        if existing_email:
+            return jsonify({"error": "Email is already used by another account."}), 400
+        update_fields["email"] = data["email"]
+
+    # Disallow updating the phone number
+    if "phone" in data:
+        # Fetch the current phone from the database
+        current_user = db.users.find_one({"userId": user_id})
+        current_phone = current_user.get("phone", "") if current_user else ""
+        if data["phone"] != current_phone:
+            return jsonify({"error": "Phone number cannot be updated."}), 400
+
+    # Update date of birth if provided
+    if "dob" in data:
+        try:
+            dob_parsed = datetime.datetime.strptime(data["dob"], "%Y-%m-%d").date().isoformat()
+        except ValueError:
+            return jsonify({"error": "Invalid date of birth format (YYYY-MM-DD required)."}), 400
+        update_fields["dob"] = dob_parsed
+
+    # Update city if provided
+    if "city" in data:
+        city = data["city"].strip()
+        if not city:
+            return jsonify({"error": "City cannot be empty."}), 400
+        update_fields["city"] = city
+
+    # Update state if provided
+    if "state" in data:
+        state = data["state"].strip()
+        if not state:
+            return jsonify({"error": "State cannot be empty."}), 400
+        update_fields["state"] = state
+
+    if not update_fields:
+        return jsonify({"error": "No valid fields to update."}), 400
+
+    update_fields["updatedAt"] = datetime.datetime.utcnow()
+
+    result = db.users.update_one(
+        {"userId": user_id},
+        {"$set": update_fields}
+    )
+    if result.matched_count == 0:
+        return jsonify({"error": "User not found."}), 404
+
+    return jsonify({"message": "User details updated."}), 200

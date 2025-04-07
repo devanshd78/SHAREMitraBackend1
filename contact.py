@@ -96,8 +96,8 @@ def store_contact():
 def get_india_states():
     """
     GET /contact/india_states?state=Maharashtra
-    - If a query parameter 'state' is provided, returns that state's name and its list of cities.
-    - If no state parameter is provided, returns a list of all Indian states with their cities.
+    - If a query parameter 'state' is provided, returns that state's stateId, name and its list of cities.
+    - If no state parameter is provided, returns a list of all Indian states with their stateIds, names, and cities.
     """
     try:
         state_query = request.args.get("state")
@@ -111,8 +111,9 @@ def get_india_states():
                 return jsonify({"error": "State not found."}), 404
 
             state_doc = convert_objectids(state_doc)
-            # Return the matching state's name and cities
+            # Return the matching state's stateId, name, and cities
             return jsonify({
+                "stateId": state_doc.get("stateId"),
                 "state": state_doc.get("name"),
                 "cities": state_doc.get("cities", [])
             }), 200
@@ -122,12 +123,12 @@ def get_india_states():
             states_list = list(cursor)
             states_list = convert_objectids(states_list)
             
-            # Each document has "name" and "cities"
-            # Return them in a consistent format
+            # Each document has "stateId", "name", and "cities"
             return jsonify({
                 "states": [
                     {
-                        "name": doc.get("name"),
+                        "stateId": doc.get("stateId"),
+                        "state": doc.get("name"),
                         "cities": doc.get("cities", [])
                     }
                     for doc in states_list

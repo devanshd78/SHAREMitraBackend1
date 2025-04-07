@@ -216,9 +216,6 @@ def get_all_payouts_status():
 
     payouts = list(db.payouts.find({"userId": user_id}).sort("created_at", -1))
 
-    if not payouts:
-        return jsonify({"message": "No payouts found for this user"}), 404
-
     def map_status(status_raw):
         status_raw = status_raw.lower()
         if status_raw in ["processing"]:
@@ -253,7 +250,7 @@ def get_all_payouts_status():
         "userId": user_id,
         "total_payouts": len(result),
         "total_payout_amount": total_amount,
-        "payouts": result
+        "payouts": result  # Empty list if no payouts found
     }), 200
 
 @payout_bp.route("/history", methods=["POST"])

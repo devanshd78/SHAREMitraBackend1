@@ -195,13 +195,54 @@ def get_task_by_id():
         return jsonify({"error": "Task not found"}), 404
     return jsonify({"task": task_doc}), 200
 
-@task_bp.route("/newtask", methods=["GET"])
-def get_new_task():
-    latest_task = db.tasks.find({}, {"_id": 0}).sort("createdAt", -1).limit(1)
-    latest_task_list = list(latest_task)
-    if not latest_task_list:
-        return jsonify({"error": "No tasks found"}), 404
-    return jsonify({"task": latest_task_list[0]}), 200
+@task_bp.route("/newtask", methods=["POST"])
+def new_task():
+    """
+    POST /task/newtask
+    JSON Body:
+    {
+      "userId": "user123"  
+    }
+
+    Returns the most recent task that has not already been verified by the user.
+    - If a task is found and its 'hidden' status is set, a message "Task hidden" is returned.
+    - If no task is available (e.g. all tasks are already verified), returns "Task will upload soon..."
+    """
+    data = request.get_json() or {}
+    user_id = data.get("userId", "").strip()
+
+    # Retrieve candidate tasks sorted by creation time (newest first)
+    tasks_cursor = db.tasks.find({}, {"_id": 0}).sort("createdAt", -1)
+    candidate_task = None
+
+    for task in tasks_cursor:
+        # If a userId is provided, check if this task has already been verified for that user.
+        if user_id:
+            history_entry = db.task_history.find_one({
+                "userId": user_id,
+                "taskId": task["taskId"],
+                "verified": True
+            })
+            if history_entry:
+                # Skip this task if it has been verified by the user.
+                continue
+
+        # Use this task as the candidate.
+        candidate_task = task
+        break
+
+    if not candidate_task:
+        return jsonify({"message": "Task will upload soon..."}), 200
+
+    # If the candidate task is marked as hidden, return a message instead of the task details.
+    if candidate_task.get("hidden", False):
+        return jsonify({
+            "message": "Task hidden",
+            "taskId": candidate_task.get("taskId", "")
+        }), 200
+
+    return jsonify({"task": candidate_task}), 200
+
 
 @task_bp.route("/prevtasks", methods=["GET"])
 def get_previous_tasks():
@@ -255,119 +296,70 @@ def toggle_hide_task():
         task = db.tasks.find_one({"taskId": task_id}, {"_id": 0})
         return jsonify({"message": "Task unhidden successfully", "task": task}), 200
 
-
-################################################
-#  Below is the code for generating/viewing tokens
-################################################
-
-def get_or_create_token_for_user(task_id: str, user_id: str) -> str:
+@task_bp.route("/latestTask", methods=["POST"])
+def getLatestTask():
     """
-    Retrieve an existing token for (taskId, userId) or create a new one if none exists.
-    Uses a separate collection 'task_tokens' to store tokens.
-    """
-    token_doc = db.task_tokens.find_one({"taskId": task_id, "userId": user_id})
-    if token_doc:
-        # Return the existing token
-        return token_doc["token"]
-    
-    # Generate a new token
-    token = secrets.token_urlsafe(16)
-    
-    # (Optional) Set an expiration date/time for the token
-    expires_at = datetime.utcnow() + timedelta(hours=24)  # 24-hour expiry
-
-    # Store in 'task_tokens' collection
-    new_token_doc = {
-        "taskId": task_id,
-        "userId": user_id,
-        "token": token,
-        "createdAt": datetime.utcnow(),
-        "expiresAt": expires_at
-    }
-    db.task_tokens.insert_one(new_token_doc)
-    return token
-
-@task_bp.route("/generate_token", methods=["POST"])
-def generate_token():
-    """
-    POST /task/generate_token
+    POST /task/latestTask
     JSON Body:
     {
-      "userId": "someUserId",
-      "taskId": "someTaskId"
+      "userId": "user123"
     }
-    Returns a tokenized link specific to the user & task.
+    
+    Returns:
+      {
+         "userId": "user123",
+         "tasks": [
+             {
+                "taskId": "xxxxxxxxxxxxxxxxxxxxxxxx",
+                "title": "Some Title",
+                "description": "Task description",
+                "message": "https://example.com/valid-link",
+                "task_price": 100,
+                "hidden": false,
+                "createdAt": "2025-04-07T12:34:56.789Z",
+                "updatedAt": "2025-04-07T12:34:56.789Z",
+                "status": "unlocked"  # or "done" or "locked"
+             },
+             ...
+         ]
+      }
+      
+    Logic:
+      - Tasks are ordered by newest first.
+      - If the task is already completed (verified) by the user, its status is "done".
+      - The first non-completed task is marked as "unlocked".
+      - All subsequent non-completed tasks are marked as "locked".
+      - Tasks with hidden = true are not returned.
     """
-    data = request.json or {}
+    data = request.get_json() or {}
     user_id = data.get("userId", "").strip()
-    task_id = data.get("taskId", "").strip()
+    if not user_id:
+        return jsonify({"error": "userId is required"}), 400
 
-    if not user_id or not task_id:
-        return jsonify({"error": "userId and taskId are required"}), 400
+    # Retrieve the top 4 tasks sorted by createdAt descending (newest first) excluding hidden tasks
+    tasks_cursor = db.tasks.find({"hidden": {"$ne": True}}, {"_id": 0}).sort("createdAt", -1).limit(4)
+    tasks_list = list(tasks_cursor)
 
-    # Make sure the task exists
-    task_doc = db.tasks.find_one({"taskId": task_id})
-    if not task_doc:
-        return jsonify({"error": "Task not found"}), 404
-
-    token = get_or_create_token_for_user(task_id, user_id)
-
-    # Build a tokenized URL that your front-end (or user) can access
-    # Adjust base URL as needed for your environment (e.g., production link)
-    base_url = "https://example.com/task/view"
-    tokenized_url = f"{base_url}?token={token}"
-
-    return jsonify({
-        "message": "Token generated successfully.",
-        "tokenized_url": tokenized_url
-    }), 200
-
-@task_bp.route("/view", methods=["GET"])
-def view_task_by_token():
-    """
-    GET /task/view?token=<user-specific-token>
-    Validates the token and returns task details if valid.
-    """
-    token = request.args.get("token", "").strip()
-    if not token:
-        return jsonify({"error": "Token is required"}), 400
-
-    token_doc = db.task_tokens.find_one({"token": token})
-    if not token_doc:
-        return jsonify({"error": "Invalid token"}), 400
-
-    # Optional: Check token expiration
-    if datetime.utcnow() > token_doc.get("expiresAt", datetime.utcnow()):
-        return jsonify({"error": "Token has expired"}), 400
-
-    # Fetch the task details
-    task_doc = db.tasks.find_one({"taskId": token_doc["taskId"]}, {"_id": 0})
-    if not task_doc:
-        return jsonify({"error": "Task not found"}), 404
+    # Sequential unlocking: mark completed tasks as done, first non-completed as unlocked,
+    # and remaining non-completed as locked.
+    unlocked_found = False
+    for task in tasks_list:
+        # Check if the user has already completed this task
+        history_entry = db.task_history.find_one({
+            "userId": user_id,
+            "taskId": task.get("taskId"),
+            "verified": True
+        })
+        if history_entry:
+            task["status"] = "done"
+        else:
+            if not unlocked_found:
+                task["status"] = "unlocked"
+                unlocked_found = True
+            else:
+                task["status"] = "locked"
 
     return jsonify({
-        "message": "Token verified",
-        "task": task_doc,
-        "userId": token_doc["userId"]
-    }), 200
-
-@task_bp.route("/viewbytoken", methods=["GET"])
-def view_task_by_token1():
-    """
-    GET /task/viewbytoken?token=<the-task-token>
-    Validates the token and returns the task details if found/valid.
-    """
-    token = request.args.get("token", "").strip()
-    if not token:
-        return jsonify({"error": "Token is required"}), 400
-
-    # Find a task with this exact token
-    task_doc = db.tasks.find_one({"token": token}, {"_id": 0})
-    if not task_doc:
-        return jsonify({"error": "Invalid token"}), 404
-
-    # Return the task details
-    return jsonify({
-        "message": "Token verified",
-        "task": task_doc
+        "userId": user_id,
+        "tasks": tasks_list
     }), 200
