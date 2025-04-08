@@ -318,14 +318,15 @@ def verify_image():
             "taskId": task_id,
             "userId": user_id,
             "matched_link": expected_link,
-            "group_name": group_check.get("group_name"),
+            "task_name": task_doc.get("title", ""),  # Instead of group name, saving task name.
             "participant_count": group_check.get("participant_count"),
-            "verification_details": result.get("details", {}),
             "verified": True,
             "verifiedAt": datetime.utcnow(),
             "task_price": int(task_doc.get("task_price", 0)),
-            "image_phash": uploaded_phash
+            "image_phash": uploaded_phash,
+            "task_details": task_doc  # All task details in the history document.
         }
+
         db.task_history.insert_one(history_doc)
         wallet_update = update_wallet_after_task(user_id, task_id, int(task_doc.get("task_price", 0)))
         if "error" in wallet_update:

@@ -113,93 +113,124 @@ def verify_otp():
 
 @user_bp.route("/register", methods=["POST"])
 def register():
+    """
+    POST /user/register
+    Request JSON Body:
+    {
+      "name": "John Doe",
+      "email": "john@example.com",
+      "phone": "8006045606",         // exactly 10 digits
+      "dob": "1990-01-01",
+      "stateId": "<state_id>",
+      "cityId": "<city_id>",
+      "referralCode": "OPTIONAL_CODE"
+    }
+    Registers a new user only if the phone number is verified.
+    It fetches the state name and city name from the 'india_states' collection using
+    the provided stateId and cityId.
+    """
+    data = request.get_json() or {}
+    name = data.get("name", "").strip()
+    email = data.get("email", "").strip()
+    phone = data.get("phone", "").strip()  # exactly 10 digits
+    dob = data.get("dob", "").strip()        # YYYY-MM-DD
+    state_id = data.get("stateId", "").strip()
+    city_id = data.get("cityId", "").strip()
+    used_referral_code = data.get("referralCode")
+
+    if not name or not is_valid_name(name):
+        return jsonify({"error": "Invalid name (max 50 chars)."}), 400
+    if not is_valid_email(email):
+        return jsonify({"error": "Invalid email format or length (5-100 chars)."}), 400
+    if not is_valid_phone(phone):
+        return jsonify({"error": "Phone must be exactly 10 digits."}), 400
+    if not state_id or not city_id:
+        return jsonify({"error": "State ID and City ID are required."}), 400
     try:
-        data = request.get_json() or {}
-        name = data.get("name", "").strip()
-        email = data.get("email", "").strip()
-        phone = data.get("phone", "").strip()  # exactly 10 digits
-        dob = data.get("dob", "").strip()        # YYYY-MM-DD
-        city = data.get("city", "").strip()
-        state = data.get("state", "").strip()
-        used_referral_code = data.get("referralCode")
+        dob_parsed = datetime.datetime.strptime(dob, "%Y-%m-%d").date().isoformat()
+    except ValueError:
+        return jsonify({"error": "Invalid date of birth format (YYYY-MM-DD required)."}), 400
 
-        if not name or not is_valid_name(name):
-            return jsonify({"error": "Invalid name (max 50 chars)."}), 400
-        if not is_valid_email(email):
-            return jsonify({"error": "Invalid email format or length (5-100 chars)."}), 400
-        if not is_valid_phone(phone):
-            return jsonify({"error": "Phone must be exactly 10 digits."}), 400
-        if not city or not state:
-            return jsonify({"error": "City and state are required."}), 400
+    full_phone = "+91" + phone
+    # Check if phone number is verified
+    if not db.verified_phone.find_one({"phone": full_phone}):
+        return jsonify({"error": "Phone number is not verified. Please verify your phone first."}), 400
 
-        try:
-            dob_parsed = datetime.datetime.strptime(dob, "%Y-%m-%d").date().isoformat()
-        except ValueError:
-            return jsonify({"error": "Invalid date of birth format (YYYY-MM-DD required)."}), 400
+    # Check for existing user by email or phone
+    existing_user = db.users.find_one({"$or": [{"email": email}, {"phone": phone}]})
+    if existing_user:
+        if existing_user.get("email") == email:
+            return jsonify({"error": "Email already registered."}), 400
+        else:
+            return jsonify({"error": "Phone number already registered."}), 400
 
-        full_phone = "+91" + phone
-        # Check if phone number is verified
-        if not db.verified_phone.find_one({"phone": full_phone}):
-            return jsonify({"error": "Phone number is not verified. Please verify your phone first."}), 400
+    # Fetch state details from the 'india_states' collection using the provided stateId
+    state_doc = db.india_states.find_one({"stateId": state_id})
+    if not state_doc:
+        return jsonify({"error": "Invalid state ID."}), 400
 
-        # Check for existing user
-        existing_user = db.users.find_one({"$or": [{"email": email}, {"phone": phone}]})
-        if existing_user:
-            if existing_user.get("email") == email:
-                return jsonify({"error": "Email already registered."}), 400
-            else:
-                return jsonify({"error": "Phone number already registered."}), 400
+    # Find the city within the state's cities list using the provided cityId
+    city_obj = None
+    for city in state_doc.get("cities", []):
+        if city.get("cityId") == city_id:
+            city_obj = city
+            break
+    if not city_obj:
+        return jsonify({"error": "Invalid city ID for the given state."}), 400
 
-        user_id_str = str(ObjectId())
+    # Generate unique user ID and referral code
+    user_id_str = str(ObjectId())
+    referral_code = generate_referral_code(6)
+    while db.users.find_one({"referralCode": referral_code}):
         referral_code = generate_referral_code(6)
-        while db.users.find_one({"referralCode": referral_code}):
-            referral_code = generate_referral_code(6)
 
-        referred_by = None
-        if used_referral_code:
-            referrer = db.users.find_one({"referralCode": used_referral_code})
-            if not referrer:
-                return jsonify({"error": "Invalid referral code."}), 400
-            referred_by = used_referral_code
-            db.users.update_one({"referralCode": used_referral_code}, {"$inc": {"referralCount": 1}})
+    referred_by = None
+    if used_referral_code:
+        referrer = db.users.find_one({"referralCode": used_referral_code})
+        if not referrer:
+            return jsonify({"error": "Invalid referral code."}), 400
+        referred_by = used_referral_code
+        db.users.update_one({"referralCode": used_referral_code}, {"$inc": {"referralCount": 1}})
 
-        user_doc = {
-            "userId": user_id_str,
-            "referralCode": referral_code,
-            "referredBy": referred_by,
-            "referralCount": 0,
-            "name": name,
-            "email": email,
-            "phone": phone,  # stored as 10 digits
-            "state": state,
-            "city": city,
-            "dob": dob_parsed,
-            "razorpay_contact_id": None,
-            "razorpay_fund_account_id": None,
-            "totalPayoutAmount": 0,
-            "createdAt": datetime.datetime.utcnow(),
-            "updatedAt": datetime.datetime.utcnow()
-        }
-        db.users.insert_one(user_doc)
-        
-        # Create wallet document for the user
-        wallet_doc = {
-            "userId": user_id_str,
-            "total_earning": 0,
-            "withdrawn": 0,
-            "balance": 0,
-            "tasks": [],
-            "createdAt": datetime.datetime.utcnow(),
-            "updatedAt": datetime.datetime.utcnow()
-        }
-        db.wallet.insert_one(wallet_doc)
+    # Create the user document with the state and city details
+    user_doc = {
+        "userId": user_id_str,
+        "referralCode": referral_code,
+        "referredBy": referred_by,
+        "referralCount": 0,
+        "name": name,
+        "email": email,
+        "phone": phone,  # stored as 10 digits
+        "stateId": state_id,
+        "stateName": state_doc.get("name"),
+        "cityId": city_id,
+        "cityName": city_obj.get("name"),
+        "dob": dob_parsed,
+        "razorpay_contact_id": None,
+        "razorpay_fund_account_id": None,
+        "totalPayoutAmount": 0,
+        "createdAt": datetime.datetime.utcnow(),
+        "updatedAt": datetime.datetime.utcnow()
+    }
+    
+    db.users.insert_one(user_doc)
+    
+    # Create wallet document for the user
+    wallet_doc = {
+         "userId": user_id_str,
+         "total_earning": 0,
+         "withdrawn": 0,
+         "balance": 0,
+         "tasks": [],
+         "createdAt": datetime.datetime.utcnow(),
+         "updatedAt": datetime.datetime.utcnow()
+    }
+    db.wallet.insert_one(wallet_doc)
 
-        return jsonify({
-            "message": "User registered successfully",
-            "userId": user_id_str
-        }), 201
-    except Exception as e:
-        return jsonify({"error": "Unexpected error occurred", "details": str(e)}), 500
+    return jsonify({
+        "message": "User registered successfully",
+        "userId": user_id_str
+    }), 201
 
 
 @user_bp.route("/login/sendOTP", methods=["POST"])
@@ -336,7 +367,7 @@ def delete_user():
     return jsonify({"message": "User deleted successfully"}), 200
 
 @user_bp.route("/updatedetails", methods=["POST"])
-def update_user_details():
+def update_user_details1():
     data = request.json or {}
     user_id = data.get("userId")
     if not user_id:
@@ -437,8 +468,8 @@ def dummy_login():
     }), 200
 
 @user_bp.route("/update", methods=["POST"])
-def update_user_details1():
-    data = request.json or {}
+def update_user_details():
+    data = request.get_json() or {}
     user_id = data.get("userId")
     if not user_id:
         return jsonify({"error": "userId is required"}), 400
@@ -449,25 +480,24 @@ def update_user_details1():
     if "name" in data:
         if not is_valid_name(data["name"]):
             return jsonify({"error": "Invalid name (max 50 chars)."}), 400
-        update_fields["name"] = data["name"]
+        update_fields["name"] = data["name"].strip()
 
     # Update email if provided
     if "email" in data:
-        if not is_valid_email(data["email"]):
+        email = data["email"].strip()
+        if not is_valid_email(email):
             return jsonify({"error": "Invalid email format or length (5-100 chars)."}), 400
-        existing_email = db.users.find_one(
-            {"email": data["email"], "userId": {"$ne": user_id}}
-        )
+        existing_email = db.users.find_one({"email": email, "userId": {"$ne": user_id}})
         if existing_email:
             return jsonify({"error": "Email is already used by another account."}), 400
-        update_fields["email"] = data["email"]
+        update_fields["email"] = email
 
-    # Disallow updating the phone number
+    # Disallow updating the phone number unless it is the same as before.
     if "phone" in data:
-        # Fetch the current phone from the database
         current_user = db.users.find_one({"userId": user_id})
-        current_phone = current_user.get("phone", "") if current_user else ""
-        if data["phone"] != current_phone:
+        current_phone = current_user.get("phone", "").strip() if current_user else ""
+        new_phone = data["phone"].strip()
+        if new_phone != current_phone:
             return jsonify({"error": "Phone number cannot be updated."}), 400
 
     # Update date of birth if provided
@@ -478,19 +508,35 @@ def update_user_details1():
             return jsonify({"error": "Invalid date of birth format (YYYY-MM-DD required)."}), 400
         update_fields["dob"] = dob_parsed
 
-    # Update city if provided
-    if "city" in data:
-        city = data["city"].strip()
-        if not city:
-            return jsonify({"error": "City cannot be empty."}), 400
-        update_fields["city"] = city
+    # Update location if stateId and cityId are provided
+    if "stateId" in data or "cityId" in data:
+        if not ("stateId" in data and "cityId" in data):
+            return jsonify({"error": "Both stateId and cityId are required to update location."}), 400
 
-    # Update state if provided
-    if "state" in data:
-        state = data["state"].strip()
-        if not state:
-            return jsonify({"error": "State cannot be empty."}), 400
-        update_fields["state"] = state
+        state_id = data["stateId"].strip()
+        city_id = data["cityId"].strip()
+        if not state_id or not city_id:
+            return jsonify({"error": "Both stateId and cityId must be non-empty."}), 400
+
+        # Fetch the state document from the 'india_states' collection
+        state_doc = db.india_states.find_one({"stateId": state_id})
+        if not state_doc:
+            return jsonify({"error": "Invalid stateId."}), 400
+
+        # Find the city within the state's cities list using the provided cityId
+        city_obj = None
+        for city in state_doc.get("cities", []):
+            if city.get("cityId") == city_id:
+                city_obj = city
+                break
+        if not city_obj:
+            return jsonify({"error": "Invalid cityId for the given stateId."}), 400
+
+        # Update the location fields
+        update_fields["stateId"] = state_id
+        update_fields["stateName"] = state_doc.get("name")
+        update_fields["cityId"] = city_id
+        update_fields["cityName"] = city_obj.get("name")
 
     if not update_fields:
         return jsonify({"error": "No valid fields to update."}), 400

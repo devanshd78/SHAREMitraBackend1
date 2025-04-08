@@ -65,23 +65,13 @@ def create_task():
     # Generate unique taskId
     task_id_str = str(ObjectId())
 
-    # Generate a token for this task
-    token = secrets.token_urlsafe(16)
-
-    # Build a tokenized URL using the 'message' (original link) as a base
-    # If you have a separate endpoint for verifying tokens, adjust accordingly.
-    unique_link = f"{message}?token={token}"
-
     task_doc = {
         "taskId": task_id_str,
         "title": title,
         "description": description,
         "message": message,   # Original link
-        "token": token,       # Store the generated token
-        "unique_link": unique_link,
         "task_price": task_price,
         "hidden": hidden,
-        "status": "pending",  
         "createdAt": datetime.utcnow(),
         "updatedAt": datetime.utcnow()
     }
@@ -91,8 +81,6 @@ def create_task():
     return jsonify({
         "message": "Task created successfully",
         "taskId": task_id_str,
-        "token": token,             # Return the token if needed on frontend
-        "unique_link": unique_link  # Return the full tokenized link
     }), 201
 
 @task_bp.route("/update", methods=["POST"])
@@ -243,33 +231,27 @@ def new_task():
 
     return jsonify({"task": candidate_task}), 200
 
-
-@task_bp.route("/prevtasks", methods=["GET"])
-def get_previous_tasks():
-    # Get the most recently created task
-    latest_task = db.tasks.find({}, {"taskId": 1}).sort("createdAt", -1).limit(1)
-    latest_task_list = list(latest_task)
-    if not latest_task_list:
-        return jsonify({"tasks": []}), 200
-    latest_task_id = latest_task_list[0]["taskId"]
-
-    # Get all tasks except the latest one
-    previous_tasks_cursor = db.tasks.find({"taskId": {"$ne": latest_task_id}}, {"_id": 0}).sort("createdAt", -1)
-    previous_tasks = list(previous_tasks_cursor)
-    return jsonify({"tasks": previous_tasks}), 200
-
 @task_bp.route('/history', methods=['POST'])
 def get_task_history():
     data = request.get_json() or {}
     user_id = data.get("userId", "").strip()
     if not user_id:
         return jsonify({"error": "userId is required"}), 400
+
+    # Retrieve task history for the user.
     tasks_cursor = db.task_history.find({"userId": user_id}, {"_id": 0}).sort("verifiedAt", -1)
     tasks_list = list(tasks_cursor)
+    
+    # Iterate over each history document and remove the ObjectId in the embedded task_details
+    for task in tasks_list:
+        if "task_details" in task and isinstance(task["task_details"], dict):
+            task["task_details"].pop("_id", None)  # Remove _id if present
+
     return jsonify({
         "userId": user_id,
         "task_history": tasks_list
-    }), 200
+    }), 200 
+
 
 @task_bp.route("/togglehide", methods=["POST"])
 def toggle_hide_task():

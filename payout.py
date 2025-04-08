@@ -21,6 +21,12 @@ def razorpay_post(endpoint, data):
     response.raise_for_status()
     return response.json()
 
+def razorpay_get(endpoint):
+    url = f"{RAZORPAY_BASE_URL}/{endpoint}"
+    response = requests.get(url, auth=HTTPBasicAuth(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET))
+    response.raise_for_status()
+    return response.json()
+
 def map_status(status_raw):
     status_raw = status_raw.lower()
     if status_raw in ["processing"]:
@@ -233,6 +239,20 @@ def get_all_payouts_status():
     result = []
 
     for payout in payouts:
+        # Update payout status from Razorpay if possible
+        try:
+            updated_info = razorpay_get(f"payouts/{payout['payout_id']}")
+            new_status = updated_info.get("status", "")
+            # Update DB if the status has changed
+            if new_status and new_status.lower() != payout.get("status_detail", "").lower():
+                db.payouts.update_one(
+                    {"payout_id": payout["payout_id"]},
+                    {"$set": {"status_detail": new_status}}
+                )
+                payout["status_detail"] = new_status
+        except Exception as ex:
+            print(f"❌ Failed to update payout {payout['payout_id']} status: {str(ex)}")
+
         amount = payout.get("amount", 0)
         total_amount += amount
 
@@ -250,8 +270,9 @@ def get_all_payouts_status():
         "userId": user_id,
         "total_payouts": len(result),
         "total_payout_amount": total_amount,
-        "payouts": result  # Empty list if no payouts found
+        "payouts": result  # will be an empty list if no payouts found
     }), 200
+
 
 @payout_bp.route("/history", methods=["POST"])
 def get_payout_history():
@@ -269,10 +290,8 @@ def get_payout_history():
     searchquery = data.get("searchquery", "").strip()
 
     # Build filter for payouts based on searchquery.
-    # We'll search for matching userIds from the users collection if a query is provided.
     filter_query = {}
     if searchquery:
-        # Find matching user IDs based on search in userId or name.
         matching_users = list(db.users.find(
             {"$or": [
                 {"userId": {"$regex": searchquery, "$options": "i"}},
@@ -292,7 +311,6 @@ def get_payout_history():
             }), 200
         filter_query["userId"] = {"$in": user_ids}
 
-    # Get total count and total payout amount for the filtered results
     total = db.payouts.count_documents(filter_query)
     agg = list(db.payouts.aggregate([
         {"$match": filter_query},
@@ -305,9 +323,38 @@ def get_payout_history():
         .skip(page * per_page).limit(per_page)
     payouts_list = list(payouts_cursor)
 
-    # For each payout, lookup user name
+    def map_status(status_raw):
+        status_raw = status_raw.lower()
+        if status_raw in ["processing"]:
+            return "Processing"
+        elif status_raw in ["failed", "rejected", "cancelled"]:
+            return "Declined"
+        elif status_raw in ["queued", "pending", "on-hold", "scheduled"]:
+            return "Pending"
+        elif status_raw in ["processed"]:
+            return "Processed"
+        else:
+            return status_raw.capitalize()
+
     result = []
     for payout in payouts_list:
+        try:
+            # Fetch updated payout information from Razorpay
+            updated_info = razorpay_get(f"payouts/{payout['payout_id']}")
+            new_status = updated_info.get("status", "")
+            # Update the DB if the status has changed
+            if new_status and new_status.lower() != payout.get("status_detail", "").lower():
+                db.payouts.update_one(
+                    {"payout_id": payout["payout_id"]},
+                    {"$set": {"status_detail": new_status}}
+                )
+                payout["status_detail"] = new_status
+        except Exception as ex:
+            # Log the error and continue with the existing status if fetch fails
+            print(f"Failed to update payout status for {payout['payout_id']}: {str(ex)}")
+
+        mode = "Bank" if payout.get("fund_account_type") == "bank_account" else "UPI"
+        # Fetch user name using the userId
         user = db.users.find_one({"userId": payout.get("userId")}, {"name": 1})
         name = user.get("name") if user else ""
         result.append({
@@ -315,8 +362,8 @@ def get_payout_history():
             "userId": payout.get("userId"),
             "name": name,
             "amount": payout.get("amount", 0),
-            "withdraw_time": payout.get("created_at"),  # assuming created_at is used as withdraw_time
-            "mode": "Bank" if payout.get("fund_account_type") == "bank_account" else "UPI",
+            "withdraw_time": payout.get("created_at"),
+            "mode": mode,
             "status": map_status(payout.get("status_detail", ""))
         })
 
