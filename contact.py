@@ -1,7 +1,9 @@
-from flask import Blueprint, request, jsonify
+import re
 import datetime
-from db import db  # Ensure this imports your configured PyMongo instance
+from flask import Blueprint, request
 from bson import ObjectId
+from db import db  # Ensure this imports your configured PyMongo instance
+from utils import format_response
 
 contact_bp = Blueprint("contact", __name__, url_prefix="/contact")
 
@@ -29,7 +31,8 @@ def convert_objectids(data):
 def store_contact():
     """
     POST /contact/store
-    JSON Body:
+    Stores the provided contact details in the contacts collection.
+    Expected JSON Body:
     {
         "fullname": "John Doe",
         "email": "john@example.com",
@@ -41,33 +44,44 @@ def store_contact():
         "state": "California",
         "city": "Los Angeles"
     }
-    Stores the provided contact details in the contacts collection.
     """
     try:
         data = request.get_json() or {}
-        
-        # Required fields
+
+        # Extract and strip required fields
         fullname    = data.get("fullname", "").strip()
         email       = data.get("email", "").strip()
         phonemumber = data.get("phonemumber", "").strip()
         subject     = data.get("subject", "").strip()
-        
-        # Optional fields
-        companyname = data.get("companyname", "").strip()
-        address     = data.get("address", "").strip()
-        message     = data.get("message", "").strip()
         state       = data.get("state", "").strip()
         city        = data.get("city", "").strip()
-        
-        if not fullname:
-            return jsonify({"error": "fullname is required."}), 400
-        if not email:
-            return jsonify({"error": "email is required."}), 400
-        if not phonemumber:
-            return jsonify({"error": "phonemumber is required."}), 400
-        if not subject:
-            return jsonify({"error": "subject is required."}), 400
+        address     = data.get("address", "").strip()
 
+
+        # Optional fields
+        companyname = data.get("companyname", "").strip()
+        message     = data.get("message", "").strip()
+        
+
+        # Validate required fields
+        if not fullname:
+            return format_response(False, "fullname is required.", None, 400)
+        if not email:
+            return format_response(False, "email is required.", None, 400)
+        if not phonemumber:
+            return format_response(False, "phonemumber is required.", None, 400)
+        if not subject:
+            return format_response(False, "subject is required.", None, 400)
+        if not state:
+            return format_response(False, "state is required.", None, 400)
+        if not city:
+            return format_response(False, "city is required.", None, 400)
+        if not address:
+            return format_response(False, "address is required.", None, 400)
+
+
+
+        # Prepare the contact document
         contact_doc = {
             "fullname": fullname,
             "email": email,
@@ -80,17 +94,12 @@ def store_contact():
             "city": city,
             "createdAt": datetime.datetime.utcnow()
         }
-        
+
         result = db.contacts.insert_one(contact_doc)
-        
-        return jsonify({
-            "message": "Contact details stored successfully.",
-            "contactId": str(result.inserted_id)
-        }), 201
+        return format_response(True, "Contact details stored successfully.", {"contactId": str(result.inserted_id)}, 201)
 
     except Exception as e:
-        return jsonify({"error": "Server error", "message": str(e)}), 500
-
+        return format_response(False, "Server error", {"message": str(e)}, 500)
 
 @contact_bp.route("/india_states", methods=["GET"])
 def get_india_states():
@@ -101,30 +110,29 @@ def get_india_states():
     """
     try:
         state_query = request.args.get("state")
-        
+
         if state_query:
             # Search for a specific state by 'name' (case-insensitive)
             state_doc = db.india_states.find_one({
-                "name": {"$regex": f"^{state_query}$", "$options": "i"}
+                "name": {"$regex": f"^{re.escape(state_query)}$", "$options": "i"}
             })
             if not state_doc:
-                return jsonify({"error": "State not found."}), 404
+                return format_response(False, "State not found.", None, 404)
 
             state_doc = convert_objectids(state_doc)
-            # Return the matching state's stateId, name, and cities
-            return jsonify({
+            response_data = {
                 "stateId": state_doc.get("stateId"),
                 "state": state_doc.get("name"),
                 "cities": state_doc.get("cities", [])
-            }), 200
+            }
+            return format_response(True, "State found successfully.", response_data, 200)
         else:
             # Return all states and their cities
             cursor = db.india_states.find()
             states_list = list(cursor)
             states_list = convert_objectids(states_list)
-            
-            # Each document has "stateId", "name", and "cities"
-            return jsonify({
+
+            response_data = {
                 "states": [
                     {
                         "stateId": doc.get("stateId"),
@@ -133,7 +141,8 @@ def get_india_states():
                     }
                     for doc in states_list
                 ]
-            }), 200
+            }
+            return format_response(True, "States retrieved successfully.", response_data, 200)
 
     except Exception as e:
-        return jsonify({"error": "Server error", "message": str(e)}), 500
+        return format_response(False, "Server error", {"message": str(e)}, 500)

@@ -312,7 +312,7 @@ india_states = [
   ]
     },
     {
-        "name": "",
+        "name": "Haryana",
         "cities": [
     "Faridabad",
     "Gurgaon",

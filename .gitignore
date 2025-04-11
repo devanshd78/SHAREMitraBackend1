@@ -33,3 +33,9 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+payslip.py
+invoice.py
+
+._payslip.py
+._invoice.py

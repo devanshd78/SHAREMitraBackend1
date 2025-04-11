@@ -1,129 +1,147 @@
 import re
 import bcrypt
-from flask import Flask, request, jsonify, Blueprint
-from pymongo import MongoClient
+import logging
+from flask import Blueprint, request, jsonify
+from pymongo import MongoClient, errors as pymongo_errors
 from bson import ObjectId
+from utils import format_response
 
-admin_bp = Blueprint("admin", __name__)
+admin_bp = Blueprint("admin", __name__, url_prefix="/admin")
 
+# Configure logger
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Connect to MongoDB
 client = MongoClient("mongodb://localhost:27017")
 db = client["enoylity"]
 admins_collection = db["admins"]
 
+def create_default_admin():
+    """
+    Creates a default admin account if it does not already exist in the database.
+    - Email: admin@sharemitra.com
+    - Password: Admin@1234
+    """
+    try:
+        default_email = "admin@sharemitra.com"
+        default_password = "Admin@1234"
+        # Use case-insensitive query to check for existence.
+        existing_admin = admins_collection.find_one({
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+            'email': {'$regex': f'^{re.escape(default_email)}$', '$options': 'i'}
+        })
+        if not existing_admin:
+            hashed_password = bcrypt.hashpw(
+                default_password.encode('utf-8'), 
+                bcrypt.gensalt()
+            ).decode('utf-8')
+            admin_data = {
+                "adminId": str(ObjectId()),
+                "email": default_email,
+                "password": hashed_password
+            }
+            admins_collection.insert_one(admin_data)
+            logger.info("Default admin created.")
+    except pymongo_errors.PyMongoError as e:
+        logger.error("Error creating default admin: %s", e)
+
+create_default_admin()
+
 @admin_bp.route("/login", methods=["POST"])
 def login_admin():
-    input_data = request.get_json()
-    email = input_data.get('email')
-    password = input_data.get('password')
+    try:
+        input_data = request.get_json()
+        if not input_data:
+            return format_response(False, "Missing JSON payload.", None, 400)
 
-    admin = admins_collection.find_one({'email': email})
-    if admin and bcrypt.checkpw(password.encode('utf-8'), admin['password'].encode('utf-8')):
-        admin['_id'] = str(admin['_id'])
-        del admin['password']
-        admin['role'] = "admin"
-        return jsonify({
-            'status': 200,
-            'msg': "Login successful",
-            'user': admin
-        }), 200
-    else:
-        return jsonify({
-            'status': 401,
-            'msg': "Invalid email or password",
-        }), 401
+        email = input_data.get('email')
+        password = input_data.get('password')
 
+        if not email or not password:
+            return format_response(False, "Email and password are required.", None, 400)
+
+        # Use a case-insensitive regex query to find the admin.
+        query = {'email': {'$regex': f'^{re.escape(email)}$', '$options': 'i'}}
+        admin = admins_collection.find_one(query)
+        if admin and bcrypt.checkpw(password.encode('utf-8'), admin['password'].encode('utf-8')):
+            # Remove sensitive data before sending the response.
+            admin.pop('_id', None)
+            admin.pop('password', None)
+            admin['role'] = "admin"
+            return format_response(True, "Login successful", admin, 200)
+        else:
+            return format_response(False, "Invalid email or password", None, 404)
+
+    except Exception as e:
+        logger.exception("Exception during login: %s", e)
+        return format_response(False, "Internal server error.", None, 500)
 
 @admin_bp.route("/update", methods=["POST"])
 def update_admin():
-    data = request.get_json() or {}
-    admin_id = data.get("adminId")
-    if not admin_id:
-        return jsonify({
-            "status": 0,
-            "msg": "adminId is required.",
-            "class": "error"
-        }), 400
+    try:
+        data = request.get_json() or {}
+        admin_id = data.get("adminId")
+        if not admin_id:
+            return format_response(False, "adminId is required.", None, 400)
 
-    # Require both email and new password for update
-    if "email" not in data or "password" not in data:
-        return jsonify({
-            "status": 0,
-            "msg": "Both email and new password are required for update.",
-            "class": "error"
-        }), 400
+        if "email" not in data or "password" not in data:
+            return format_response(False, "Both email and new password are required for update.", None, 400)
 
-    update_fields = {}
+        new_email = data.get("email")
+        new_password = data.get("password")
+        update_fields = {"email": new_email}
 
-    # Update email with uniqueness check
-    new_email = data.get("email")
-    existing_admin = admins_collection.find_one({
-        "email": new_email,
-        "adminId": {"$ne": admin_id}
-    })
-    if existing_admin:
-        return jsonify({
-            "status": 0,
-            "msg": "Another admin with this email already exists.",
-            "class": "error"
-        }), 409
-    update_fields["email"] = new_email
-
-    # Update password with validations
-    new_password = data.get("password")
-    if not re.match(r"^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,16}$", new_password):
-        return jsonify({
-            "status": 0,
-            "msg": "Password must be 8-16 chars, include uppercase, lowercase, number, special char.",
-            "class": "error"
-        }), 400
-    if "gmail" in new_password.lower():
-        return jsonify({
-            "status": 0,
-            "msg": "Password should not contain 'gmail'.",
-            "class": "error"
-        }), 400
-    hashed_password = bcrypt.hashpw(new_password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-    update_fields["password"] = hashed_password
-
-    result = admins_collection.update_one(
-        {"adminId": admin_id},
-        {"$set": update_fields}
-    )
-    if result.matched_count == 0:
-        return jsonify({
-            "status": 0,
-            "msg": "Admin not found.",
-            "class": "error"
-        }), 404
-
-    updated_admin = admins_collection.find_one(
-        {"adminId": admin_id},
-        {"_id": 0, "password": 0}
-    )
-
-    return jsonify({
-        "status": 200,
-        "msg": "Admin details updated successfully.",
-        "admin": updated_admin
-    }), 200
-
-def create_default_admin():
-    """
-    Creates a predefined admin with:
-      - Email: admin@sharemitra.com
-      - Password: Admin@1234
-    if it does not already exist in the database.
-    """
-    default_email = "admin@sharemitra.com"
-    default_password = "Admin@1234"
-    existing_admin = admins_collection.find_one({'email': default_email})
-    if not existing_admin:
-        hashed_password = bcrypt.hashpw(default_password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-        admin_data = {
-            "adminId": str(ObjectId()),
-            "email": default_email,
-            "password": hashed_password
+        # Check for email uniqueness excluding the current admin (case-insensitive).
+        query = {
+            "email": {'$regex': f'^{re.escape(new_email)}$', '$options': 'i'},
+            "adminId": {"$ne": admin_id}
         }
-        admins_collection.insert_one(admin_data)
-        print("Default admin created.")
-create_default_admin()
+        existing_admin = admins_collection.find_one(query)
+        if existing_admin:
+            return format_response(False, "Another admin with this email already exists.", None, 404)
+
+        # Validate the new password using regex.
+        password_regex = r"^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,16}$"
+        if not re.match(password_regex, new_password):
+            return format_response(
+                False, 
+                "Password must be 8-16 characters and include uppercase, lowercase, a number, and a special character.", 
+                None, 
+                400
+            )
+        if "gmail" in new_password.lower():
+            return format_response(False, "Password should not contain 'gmail'.", None, 400)
+
+        # Hash the new password
+        hashed_password = bcrypt.hashpw(
+            new_password.encode('utf-8'), 
+            bcrypt.gensalt()
+        ).decode('utf-8')
+        update_fields["password"] = hashed_password
+
+        result = admins_collection.update_one({"adminId": admin_id}, {"$set": update_fields})
+        if result.matched_count == 0:
+            return format_response(False, "Admin not found.", None, 404)
+
+        updated_admin = admins_collection.find_one(
+            {"adminId": admin_id}, 
+            {"_id": 0, "password": 0}
+        )
+        return format_response(True, "Admin details updated successfully.", updated_admin, 200)
+    
+    except pymongo_errors.PyMongoError as e:
+        logger.error("Database error during update: %s", e)
+        return format_response(False, "Database error occurred.", None, 500)
+    except Exception as e:
+        logger.exception("Exception during admin update: %s", e)
+        return format_response(False, "Internal server error.", None, 500)
